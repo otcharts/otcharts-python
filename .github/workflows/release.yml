@@ -1,0 +1,66 @@
+name: publish to PyPI
+
+# Publishes on a GitHub Release, so cutting a release is the deliberate act and
+# nothing reaches PyPI from an ordinary push.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:        # lets a release be re-run by hand if PyPI hiccups
+
+jobs:
+  # Never publish something the tests have not passed. The push workflow already
+  # runs them, but a release can be cut from any commit, so they run again here
+  # against exactly the tree being shipped.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.8", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: PYTHONPATH=src python -m unittest discover -s tests -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      # The tag must match the version in pyproject.toml, or you publish 0.1.0
+      # from a tag that says v0.2.0 and nobody can tell which is which later.
+      - name: Tag must match the packaged version
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG packaged=$VER"
+          [ "$TAG" = "$VER" ] || { echo "::error::tag $TAG != version $VER"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing: GitHub proves this workflow's identity to PyPI over
+    # OIDC and PyPI issues a short-lived token itself. No API token is created,
+    # stored, or pasted anywhere -- so there is no long-lived secret to leak,
+    # and nobody has to handle one.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0
 
 First release. Reads `/v1/venues`, `/v1/candles` and `/v1/stream` from the OTCharts
 data API across five books: Pocket Option, Quotex, IQ Option, BinoDex, and the real
