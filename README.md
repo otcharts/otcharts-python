@@ -1,7 +1,9 @@
 # otcharts
 
-Market data from OTC broker books — **Pocket Option, Quotex, IQ Option, BinoDex** —
-and the real institutional FX market, as JSON. One dependency-free Python package.
+Market data from the OTC books of four binary options brokers — **Pocket Option,
+Quotex, IQ Option, BinoDex** — and the real institutional FX market, as JSON.
+One dependency-free Python package for trading research, backtesting and live
+signal work.
 
 ```bash
 pip install otcharts
@@ -11,11 +13,16 @@ pip install otcharts
 from otcharts import Client
 
 otc = Client()                                      # reads OTCHARTS_API_KEY
+
+for i in otc.symbols("otc"):                        # never guess an id
+    print(i.symbol, i.name)
+
 bars = otc.candles("iq", "EURUSD-OTC", tf=60, limit=300)
 print(bars[-1].close)
 
-for tick in otc.stream("quotex", "EURUSD_otc"):     # live, reconnects on drop
-    print(tick.time, tick.price)
+# A whole watchlist on ONE connection, for one request.
+for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"]):
+    print(tick.symbol, tick.price)
 ```
 
 ## Read this before you install
