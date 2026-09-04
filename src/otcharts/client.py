@@ -30,10 +30,10 @@ from .errors import (
     QuotaExceeded, TooManyStreams, TransportError,
 )
 
-__all__ = ["Client", "Candle", "Tick", "Venue"]
+__all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.1.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.2.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,58 @@ class Venue:
     """A book, and whether your plan opens it."""
     id: str
     open: bool
+
+
+@dataclass(frozen=True)
+class Instrument:
+    """One tradable thing in a book.
+
+    `symbol` is the exact string candles() and stream() want for THIS book --
+    the same pair is EURUSD_otc on Pocket Option, EURUSD-OTC on IQ and
+    EUR/USD-OTC on BinoDex, and they are not interchangeable.
+    """
+    symbol: str
+    name: str
+
+
+@dataclass(frozen=True)
+class Usage:
+    """What your plan allows and what today has spent.
+
+    Every number is the ACCOUNT's, shared across all of its keys: a second key
+    does not buy a second allowance. `resets` is unix seconds at the next
+    midnight UTC, so you can sleep until it rather than guess whose day the
+    quota follows. `instruments_per_stream` is None on Desk, which carries the
+    whole book on one connection.
+    """
+    plan: str
+    plan_name: str
+    books: tuple
+    used: int
+    quota: int
+    remaining: int
+    resets: int
+    streams_open: int
+    streams_limit: int
+    instruments_per_stream: object
+    keys: int
+
+    @classmethod
+    def _from(cls, d):
+        req, st = d.get("requests", {}), d.get("streams", {})
+        return cls(
+            plan=str(d.get("plan", "")),
+            plan_name=str(d.get("planName", "")),
+            books=tuple(d.get("books", [])),
+            used=int(req.get("used", 0)),
+            quota=int(req.get("quota", 0)),
+            remaining=int(req.get("remaining", 0)),
+            resets=int(req.get("resets", 0)),
+            streams_open=int(st.get("open", 0)),
+            streams_limit=int(st.get("limit", 0)),
+            instruments_per_stream=st.get("instrumentsPerStream"),
+            keys=int(d.get("keys", 0)),
+        )
 
 
 class Client:
@@ -145,6 +197,33 @@ class Client:
             data = json.loads(r.read().decode())
         return [Venue(v["id"], bool(v.get("open"))) for v in data.get("venues", [])]
 
+    def symbols(self, venue):
+        """Every instrument a book lists right now.
+
+        Use this instead of keeping your own list. A book drops instruments it
+        stops quoting, and a hand-written list goes stale silently -- the first
+        thing you notice is an empty response for a pair that was delisted
+        weeks ago. Costs one request, like any other call.
+        """
+        with self._request("/v1/symbols", {"venue": venue}) as r:
+            data = json.loads(r.read().decode())
+        return [Instrument(str(i["symbol"]), str(i.get("name", i["symbol"])))
+                for i in data.get("symbols", [])]
+
+    def usage(self):
+        """Your plan, and what today has spent against it.
+
+        FREE: this call does not count against the quota it reports, so a loop
+        may check it as often as it likes. Charging for the question would make
+        the answer wrong as it was given.
+
+            u = otc.usage()
+            if u.remaining < 500:
+                time.sleep(u.resets - time.time())
+        """
+        with self._request("/v1/usage") as r:
+            return Usage._from(json.loads(r.read().decode()))
+
     def candles(self, venue, symbol, tf=60, limit=300):
         """Recorded bars from the venue's own history, oldest first.
 
@@ -158,11 +237,57 @@ class Client:
             data = json.loads(r.read().decode())
         return [Candle._from(c) for c in data.get("candles", [])]
 
+    @staticmethod
+    def _symbol_param(symbol):
+        """One symbol, or several, as the API wants them.
+
+        Accepts a string or any sequence, so both of these work:
+
+            otc.stream("otc", "EURUSD_otc")
+            otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"])
+
+        Duplicates are dropped in the order given -- asking for the same pair
+        twice would otherwise spend two places against the plan's cap.
+        """
+        if isinstance(symbol, str):
+            parts = symbol.split(",")
+        else:
+            parts = list(symbol)
+        out = []
+        for part in parts:
+            part = str(part).strip()
+            if part and part not in out:
+                out.append(part)
+        if not out:
+            raise ValueError("give at least one symbol")
+        return ",".join(out)
+
     def stream(self, venue, symbol, reconnect=True, max_backoff=60):
         """Live prices, as a generator that yields Tick.
 
-        One symbol per stream, because one stream is one held connection to that
-        book.
+        `symbol` may be ONE instrument or a list of them:
+
+            for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc"]):
+                print(tick.symbol, tick.price)
+
+        One connection carrying ten instruments costs one request and one
+        stream slot -- the same as carrying one. That is the difference between
+        following a watchlist and exhausting a daily quota polling it: fifty
+        pairs asked for once a minute is 72,000 requests a day, while fifty
+        pairs on one stream is one. Every Tick carries its own `symbol`, so a
+        single loop can sort them.
+
+        How many instruments one stream may carry is a property of your plan --
+        `usage().instruments_per_stream`, or None for no limit. Asking for more
+        than that is refused with a message naming the number. Only the Pocket
+        Option book (`otc`) carries several on one connection today; the others
+        take one symbol per stream, because there a second instrument really is
+        a second connection.
+
+        Read the `connected` event's symbol list if you need to know what the
+        book actually subscribed you to: an instrument that is not quoting right
+        now is dropped rather than held open, so a weekend list of forty may
+        come back as twenty-seven. Nothing has failed.
 
         Reconnection is ON by default and deliberately does NOT retry
         everything. A dropped socket is worth retrying; a revoked key or a plan
@@ -171,10 +296,11 @@ class Client:
         So only transport failures and HouseBusy are retried -- and HouseBusy is
         retried after the delay the server asked for, not sooner.
         """
+        wanted = self._symbol_param(symbol)
         backoff = 1.0
         while True:
             try:
-                yield from self._stream_once(venue, symbol)
+                yield from self._stream_once(venue, wanted)
                 if not reconnect:
                     return
                 # A clean end of stream still means the feed stopped; pause
@@ -191,9 +317,15 @@ class Client:
                 time.sleep(min(backoff, max_backoff))
                 backoff = min(backoff * 2, max_backoff)
 
-    def _stream_once(self, venue, symbol):
-        r = self._request("/v1/stream", {"venue": venue, "symbol": symbol},
+    def _stream_once(self, venue, wanted):
+        r = self._request("/v1/stream", {"venue": venue, "symbol": wanted},
                           stream=True)
+        # With several instruments on one connection the caller's parameter is
+        # no longer a sensible fallback for an unlabelled tick -- it would tag
+        # every price with the whole comma list. A tick without a symbol is
+        # only ever a single-symbol stream, so fall back to that and to "" when
+        # there is more than one.
+        default = wanted if "," not in wanted else ""
         try:
             for raw in r:
                 line = raw.decode("utf-8", "replace").strip()
@@ -214,7 +346,7 @@ class Client:
                 if price is None:
                     continue
                 yield Tick(int(d.get("time", 0)), float(price),
-                           str(d.get("symbol", symbol)))
+                           str(d.get("symbol", default)))
         finally:
             r.close()
 

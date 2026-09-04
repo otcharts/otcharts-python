@@ -72,8 +72,15 @@ Ids are **not** portable between books. This catches everyone once:
 | `forex` | Real market, institutional feed | `EURUSD` |
 
 ```python
-otc.venues()      # every book, and whether your plan opens it
+otc.venues()            # every book, and whether your plan opens it
+otc.symbols("otc")      # every instrument in one, with the exact id to send
 ```
+
+Do not keep your own list. A book drops instruments it stops quoting, and a
+hand-written list goes stale silently — the first thing you notice is an empty
+response for a pair delisted weeks ago. `symbols()` is the live catalogue;
+[the cross-reference](https://otcharts.com/symbols.html) is the same thing for
+a human, all five books side by side.
 
 ## Errors that tell you what to do
 
@@ -98,14 +105,53 @@ except PlanError:          # 402 — key is fine, plan does not open this book
 `AuthError` (401) is worth one note: a password reset revokes every API key on the
 account, so a key that worked yesterday may simply have been revoked.
 
-## Streaming
-
-One symbol per stream, because one stream is one held connection to that book.
+## Knowing where you stand
 
 ```python
-for tick in otc.stream("otc", "EURUSD_otc"):
+u = otc.usage()
+print(u.used, "of", u.quota, "-", u.remaining, "left")
+print("resets at", u.resets)                  # unix seconds, next midnight UTC
+print(u.instruments_per_stream, "per stream") # None on Desk: the whole book
+```
+
+**This call is free** — it does not count against the quota it reports, so a
+loop may check it as often as it likes. Every figure is the *account's*, shared
+across all of its keys: a second key does not buy a second allowance.
+
+```python
+if u.remaining < 500:
+    time.sleep(u.resets - time.time())        # rather than find out by refusal
+```
+
+## Streaming
+
+One connection, and it can carry **many instruments**:
+
+```python
+for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"]):
+    print(tick.symbol, tick.price)        # every tick names its own instrument
+```
+
+This is the difference between following a watchlist and exhausting a quota
+polling it. Fifty pairs asked for once a minute is **72,000 requests a day**;
+fifty pairs on one stream is **one**, and holding it costs nothing further.
+
+How many one stream may carry is a property of your plan —
+`usage().instruments_per_stream`, or `None` for no limit. Ask for more and the
+refusal names the number. Several instruments on one connection is a Pocket
+Option (`otc`) feature today; the other books take one symbol per stream,
+because there a second instrument really is a second connection.
+
+A single symbol still works exactly as before:
+
+```python
+for tick in otc.stream("quotex", "EURUSD_otc"):
     ...
 ```
+
+The book subscribes you only to what is quoting right now, so a weekend list of
+forty may come back as twenty-seven. Nothing has failed; an instrument that is
+not trading is dropped rather than held open.
 
 Reconnection is on by default and is deliberately selective. Dropped sockets and
 `HouseBusy` are retried — `HouseBusy` after the delay the server asks for. A revoked

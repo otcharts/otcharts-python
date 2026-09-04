@@ -17,11 +17,13 @@ from otcharts import (
 )
 
 ROUTES = {}          # path -> (status, headers, body)
+SEEN = {}            # path -> the full request line, query and all
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
+        SEEN[path] = self.path
         if self.headers.get("Authorization") != "Bearer test-key":
             self._send(401, {}, json.dumps({"error": "key refused"}))
             return
@@ -157,10 +159,104 @@ class TestStream(Base):
             next(gen)   # raises even with reconnect ON, rather than spinning
 
 
+class TestCatalogue(Base):
+    """/v1/symbols -- so nobody has to keep their own list of ids."""
+
+    def test_symbols_carry_the_id_and_a_name(self):
+        ROUTES["/v1/symbols"] = (200, {}, json.dumps({"venue": "otc", "count": 2, "symbols": [
+            {"symbol": "EURUSD_otc", "name": "EUR/USD"},
+            {"symbol": "#AAPL_otc", "name": "Apple"},
+        ]}))
+        got = self.client().symbols("otc")
+        self.assertEqual([i.symbol for i in got], ["EURUSD_otc", "#AAPL_otc"])
+        self.assertEqual(got[1].name, "Apple")
+        self.assertIn("venue=otc", SEEN["/v1/symbols"])
+
+    def test_a_symbol_without_a_name_falls_back_to_its_id(self):
+        ROUTES["/v1/symbols"] = (200, {}, json.dumps({"symbols": [{"symbol": "EURUSD"}]}))
+        self.assertEqual(self.client().symbols("forex")[0].name, "EURUSD")
+
+
+class TestUsage(Base):
+    """/v1/usage -- the figures a customer otherwise learns by being cut off."""
+
+    BODY = json.dumps({
+        "plan": "api_build", "planName": "Build", "expires": 1791138947,
+        "books": ["otc"],
+        "requests": {"used": 17774, "quota": 25000, "remaining": 7226, "resets": 1788566400},
+        "streams": {"open": 1, "limit": 1, "instrumentsPerStream": 10},
+        "keys": 2,
+    })
+
+    def test_usage_reads_every_figure(self):
+        ROUTES["/v1/usage"] = (200, {}, self.BODY)
+        u = self.client().usage()
+        self.assertEqual((u.plan, u.plan_name), ("api_build", "Build"))
+        self.assertEqual((u.used, u.quota, u.remaining), (17774, 25000, 7226))
+        self.assertEqual(u.resets, 1788566400)
+        self.assertEqual((u.streams_open, u.streams_limit), (1, 1))
+        self.assertEqual(u.instruments_per_stream, 10)
+        self.assertEqual(u.books, ("otc",))
+        self.assertEqual(u.keys, 2)
+
+    def test_desk_reports_no_instrument_ceiling(self):
+        """None, not 0 -- Desk carries the whole book on one connection."""
+        body = json.loads(self.BODY)
+        body["streams"]["instrumentsPerStream"] = None
+        ROUTES["/v1/usage"] = (200, {}, json.dumps(body))
+        self.assertIsNone(self.client().usage().instruments_per_stream)
+
+
+class TestMultiSymbolStream(Base):
+    """One connection, many instruments -- the difference between following a
+    watchlist and exhausting a quota polling it."""
+
+    TWO = ('data: {"time":100,"price":1.1,"symbol":"EURUSD_otc"}\n'
+           'data: {"time":101,"price":2.2,"symbol":"GBPUSD_otc"}\n')
+
+    def test_a_list_is_sent_as_one_comma_separated_parameter(self):
+        ROUTES["/v1/stream"] = (200, {"Content-Type": "text/event-stream"}, self.TWO)
+        list(self.client().stream("otc", ["EURUSD_otc", "GBPUSD_otc"], reconnect=False))
+        self.assertIn("symbol=EURUSD_otc%2CGBPUSD_otc", SEEN["/v1/stream"])
+
+    def test_every_tick_carries_its_own_symbol(self):
+        ROUTES["/v1/stream"] = (200, {"Content-Type": "text/event-stream"}, self.TWO)
+        ticks = list(self.client().stream("otc", ["EURUSD_otc", "GBPUSD_otc"], reconnect=False))
+        self.assertEqual([t.symbol for t in ticks], ["EURUSD_otc", "GBPUSD_otc"])
+
+    def test_one_symbol_still_works_as_a_plain_string(self):
+        ROUTES["/v1/stream"] = (200, {"Content-Type": "text/event-stream"},
+                                'data: {"time":100,"price":1.1}\n')
+        ticks = list(self.client().stream("quotex", "EURUSD_otc", reconnect=False))
+        self.assertEqual(ticks[0].symbol, "EURUSD_otc",
+                         "an unlabelled tick on a single-symbol stream is that symbol")
+
+    def test_an_unlabelled_tick_on_a_multi_stream_is_not_mislabelled(self):
+        """Tagging it with the whole comma list would be worse than empty."""
+        ROUTES["/v1/stream"] = (200, {"Content-Type": "text/event-stream"},
+                                'data: {"time":100,"price":1.1}\n')
+        ticks = list(self.client().stream("otc", ["A_otc", "B_otc"], reconnect=False))
+        self.assertEqual(ticks[0].symbol, "")
+
+    def test_duplicates_are_dropped_so_they_do_not_spend_a_place(self):
+        got = Client._symbol_param(["EURUSD_otc", "EURUSD_otc", "GBPUSD_otc"])
+        self.assertEqual(got, "EURUSD_otc,GBPUSD_otc")
+
+    def test_whitespace_and_comma_strings_are_accepted(self):
+        self.assertEqual(Client._symbol_param(" EURUSD_otc , GBPUSD_otc "),
+                         "EURUSD_otc,GBPUSD_otc")
+
+    def test_nothing_to_subscribe_is_refused_before_the_request(self):
+        for empty in ("", "   ", ",", [], [" "]):
+            with self.assertRaises(ValueError):
+                Client._symbol_param(empty)
+
+
 class TestPackage(unittest.TestCase):
     def test_version_and_exports(self):
         self.assertRegex(otcharts.__version__, r"^\d+\.\d+\.\d+$")
-        for name in ("Client", "Candle", "Tick", "AuthError", "HouseBusy"):
+        for name in ("Client", "Candle", "Tick", "Instrument", "Usage",
+                     "AuthError", "HouseBusy"):
             self.assertTrue(hasattr(otcharts, name), name)
 
 
