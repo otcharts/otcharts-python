@@ -5,6 +5,10 @@ Quotex, IQ Option, BinoDex** — and the real institutional FX market, as JSON.
 One dependency-free Python package for trading research, backtesting and live
 signal work.
 
+**Free to try, with no card.** Every confirmed account reads five instruments on
+each of the five books, 1,000 requests a day, and one live stream. The example
+below runs on that.
+
 ```bash
 pip install otcharts
 ```
@@ -21,7 +25,7 @@ bars = otc.candles("iq", "EURUSD-OTC", tf=60, limit=300)
 print(bars[-1].close)
 
 # A whole watchlist on ONE connection, for one request.
-for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"]):
+for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"]):
     print(tick.symbol, tick.price)
 ```
 
@@ -61,10 +65,28 @@ cannot conflict with whatever you already have pinned.
 
 ## Getting a key
 
-1. Buy a data plan at [otcharts.com/pricing](https://otcharts.com/pricing.html#api)
-2. Create a key on your [account page](https://otcharts.com/account.html) — it is shown
+1. Make an account at [otcharts.com](https://otcharts.com/) and confirm the address
+2. Create a key on your [account page](https://otcharts.com/account) — it is shown
    once, and only a hash is stored, so nobody can recover it afterwards, including us
 3. `export OTCHARTS_API_KEY=otc_live_...`
+
+That key works immediately on the **free tier**. No card, no trial clock, nothing
+expires:
+
+| | free tier |
+|---|---|
+| books | all five |
+| instruments per book | five, the same five the free chart opens |
+| requests a day | 1,000 |
+| live streams | one, carrying those five |
+| keys | five, each named and revocable |
+
+`symbols(venue)` lists exactly what your key can read, so on the free tier it
+returns those five rather than a catalogue of refusals. Asking for a sixth
+raises `PlanError`, and the message names the five that are open.
+
+A [paid plan](https://otcharts.com/pricing#api) opens the whole of a book and
+raises the quotas. It is the same key and the same code either way.
 
 ## The books, and their symbol formats
 
@@ -86,7 +108,7 @@ otc.symbols("otc")      # every instrument in one, with the exact id to send
 Do not keep your own list. A book drops instruments it stops quoting, and a
 hand-written list goes stale silently — the first thing you notice is an empty
 response for a pair delisted weeks ago. `symbols()` is the live catalogue;
-[the cross-reference](https://otcharts.com/symbols.html) is the same thing for
+[the cross-reference](https://otcharts.com/symbols) is the same thing for
 a human, all five books side by side.
 
 ## Errors that tell you what to do
@@ -197,11 +219,11 @@ test touches the network.
 
 ## Links
 
-- [API reference](https://otcharts.com/api.html) — one page, the whole contract
-- [Pocket Option API](https://otcharts.com/pocket-option-api.html) ·
-  [Quotex API](https://otcharts.com/quotex-api.html) ·
-  [IQ Option API](https://otcharts.com/iq-option-api.html) ·
-  [BinoDex API](https://otcharts.com/binodex-api.html)
+- [API reference](https://otcharts.com/api) — one page, the whole contract
+- [Pocket Option API](https://otcharts.com/pocket-option-api) ·
+  [Quotex API](https://otcharts.com/quotex-api) ·
+  [IQ Option API](https://otcharts.com/iq-option-api) ·
+  [BinoDex API](https://otcharts.com/binodex-api)
 
 ## Licence
 

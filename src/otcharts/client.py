@@ -33,7 +33,7 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.2.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.3.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
@@ -166,7 +166,14 @@ class Client:
         s = e.code
         if s == 401:
             return AuthError(msg or "key refused", s, body)
-        if s == 402:
+        if s in (402, 403):
+            # Both mean the same thing to a caller and want the same handler:
+            # the key is fine, the plan does not open what was asked for. 402
+            # is "no data plan at all"; 403 is a book your plan does not carry,
+            # or -- on the free tier -- an instrument outside its five. Left
+            # unmapped, 403 arrived as a bare OTChartsError and slipped past
+            # the `except PlanError` the README tells people to write, which is
+            # the refusal a free-tier key meets first.
             return PlanError(msg or "your plan does not open this", s, body)
         if s == 404:
             return NotFound(msg or "no such venue or symbol", s, body)
@@ -290,9 +297,10 @@ class Client:
         come back as twenty-seven. Nothing has failed.
 
         Reconnection is ON by default and deliberately does NOT retry
-        everything. A dropped socket is worth retrying; a revoked key or a plan
-        that does not open this book will fail identically forever, and a client
-        that hammers a 402 in a loop is a client that gets its account limited.
+        everything. A dropped socket is worth retrying; a revoked key, or a
+        book or instrument the plan does not open, will fail identically
+        forever, and a client that hammers a 402 or 403 in a loop is a client
+        that gets its account limited.
         So only transport failures and HouseBusy are retried -- and HouseBusy is
         retried after the delay the server asked for, not sooner.
         """

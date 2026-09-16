@@ -32,11 +32,14 @@ class AuthError(OTChartsError):
 
 
 class PlanError(OTChartsError):
-    """402 -- the key is good; the plan does not open what you asked for.
+    """402 or 403 -- the key is good; the plan does not open what you asked for.
 
-    Either the account holds no data plan, or it holds one that does not open
-    this book. Said apart from AuthError on purpose: hunting for a bad key when
-    the key is fine wastes an afternoon.
+    Three ways to arrive here, and the server's message says which: the account
+    holds no data plan (402), it holds one that does not carry this book (403),
+    or it is on the free tier and the instrument is outside the five that tier
+    opens on each book (403, and the message names the five). Said apart from
+    AuthError on purpose: hunting for a bad key when the key is fine wastes an
+    afternoon.
     """
 
 

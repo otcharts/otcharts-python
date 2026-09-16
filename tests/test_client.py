@@ -6,11 +6,13 @@ header, the status handling and the SSE parsing are all genuinely exercised --
 and no test touches the network.
 """
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import otcharts
+from otcharts import client as client_mod
 from otcharts import (
     AuthError, Client, HouseBusy, NotFound, PlanError,
     QuotaExceeded, TooManyStreams,
@@ -86,6 +88,24 @@ class TestReading(Base):
                 self.client().candles("quotex", "EURUSD_otc", limit=bad)
 
 
+class TestVersion(unittest.TestCase):
+    """The version is written in three places and they must agree.
+
+    pyproject.toml is what PyPI publishes, __version__ is what a user prints,
+    and USER_AGENT is what our own logs record. 0.3.0 shipped with __version__
+    still reading 0.2.0 until this caught it -- and the release workflow's
+    guard only compares the TAG against pyproject, so nothing else would have.
+    """
+
+    def test_all_three_agree(self):
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        pyproject = open(os.path.join(root, "pyproject.toml")).read()
+        packaged = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+        self.assertEqual(otcharts.__version__, packaged, "__init__.py disagrees with pyproject.toml")
+        self.assertIn(packaged, client_mod.USER_AGENT, "USER_AGENT disagrees with pyproject.toml")
+
+
 class TestRefusals(Base):
     """Each refusal must arrive as the exception that says what to DO."""
 
@@ -98,6 +118,29 @@ class TestRefusals(Base):
             {"error": "this account has no data plan"}))
         with self.assertRaises(PlanError):
             self.client().candles("iq", "EURUSD-OTC")
+
+    def test_a_book_the_plan_does_not_open_is_a_plan_error(self):
+        """403, not 402 -- and it must land in the same handler.
+
+        Unmapped, it arrived as a bare OTChartsError and slipped past the
+        `except PlanError` the README tells people to write.
+        """
+        ROUTES["/v1/candles"] = (403, {}, json.dumps(
+            {"error": "your plan does not open that book"}))
+        with self.assertRaises(PlanError):
+            self.client().candles("quotex", "EURUSD_otc")
+
+    def test_an_instrument_outside_the_free_tier_is_a_plan_error(self):
+        """The refusal a free-tier key meets first, worded as the server words
+        it: it names the five instruments that ARE open."""
+        ROUTES["/v1/candles"] = (403, {}, json.dumps({"error":
+            "the free tier does not open AUDCAD_otc on otc; it opens "
+            "EURUSD_otc, GBPUSD_otc, USDJPY_otc, BTCUSD_otc, AUDUSD_otc"}))
+        with self.assertRaises(PlanError) as caught:
+            self.client().candles("otc", "AUDCAD_otc")
+        # The message survives, because it is the part that says what to do.
+        self.assertIn("EURUSD_otc", str(caught.exception))
+        self.assertEqual(caught.exception.status, 403)
 
     def test_unknown_symbol_is_not_found(self):
         ROUTES["/v1/candles"] = (404, {}, json.dumps({"error": "no such symbol"}))
@@ -150,6 +193,15 @@ class TestStream(Base):
         ticks = list(self.client().stream("quotex", "EURUSD_otc", reconnect=False))
         self.assertEqual([t.price for t in ticks], [1.234, 1.235, 1.236])
         self.assertEqual(ticks[0].time, 100)
+
+    def test_a_403_stream_is_not_retried_either(self):
+        """A locked instrument fails identically forever; reconnecting on it
+        is the loop that gets an account rate-limited."""
+        ROUTES["/v1/stream"] = (403, {}, json.dumps(
+            {"error": "the free tier does not open AUDCAD_otc on otc"}))
+        gen = self.client().stream("otc", "AUDCAD_otc", reconnect=True)
+        with self.assertRaises(PlanError):
+            next(gen)
 
     def test_reconnect_off_does_not_retry_a_plan_error(self):
         """A 402 will fail identically forever; retrying it is a loop."""
