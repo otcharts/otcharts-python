@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+The free tier changed shape on the server, and a client that reports a quota
+without its period is worse than one that reports nothing.
+
+- **`Usage.per`** — `"day"` or `"week"`. The free tier now counts by the WEEK
+  (1,500) and every paid plan by the day, so `quota` alone is a number over an
+  unstated period: 1,500 a week and 1,500 a day are very different products.
+  Against a server old enough not to send it, this reads `"day"`, which is what
+  everything metered before it was.
+- **`Usage.quota_per`** — `"1,500 a week"`, the number and its period together,
+  because those are the two things that must never be printed apart.
+- `Usage.resets` is unchanged and still the moment the window turns over —
+  weekly or daily as the plan dictates. Sleep until it rather than until
+  midnight.
+- The free tier is now **one book of your choosing**, five instruments on it,
+  switchable any time from the account page. It was five books at five
+  instruments each.
+
 ## 0.2.0
 
 Catches the client up with three API features that shipped after 0.1.0 — the

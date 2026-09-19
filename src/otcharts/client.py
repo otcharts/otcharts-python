@@ -33,7 +33,7 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.3.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.4.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
@@ -80,13 +80,21 @@ class Instrument:
 
 @dataclass(frozen=True)
 class Usage:
-    """What your plan allows and what today has spent.
+    """What your plan allows, and what the current window has spent.
 
     Every number is the ACCOUNT's, shared across all of its keys: a second key
-    does not buy a second allowance. `resets` is unix seconds at the next
-    midnight UTC, so you can sleep until it rather than guess whose day the
-    quota follows. `instruments_per_stream` is None on Desk, which carries the
-    whole book on one connection.
+    does not buy a second allowance.
+
+    `per` IS THE ONE TO READ BEFORE THE OTHERS. The free tier counts by the
+    WEEK and every paid plan counts by the day, so `quota` on its own is a
+    number over an unstated period -- 1,500 a week and 1,500 a day are very
+    different products. It is `"week"` or `"day"`, and defaults to `"day"`
+    against a server old enough not to send it.
+
+    `resets` is unix seconds at the moment the window turns over, whichever
+    window that is, so you can sleep until it rather than compute a midnight
+    that may not be the right boundary. `instruments_per_stream` is None on
+    Desk, which carries the whole book on one connection.
     """
     plan: str
     plan_name: str
@@ -95,10 +103,16 @@ class Usage:
     quota: int
     remaining: int
     resets: int
+    per: str
     streams_open: int
     streams_limit: int
     instruments_per_stream: object
     keys: int
+
+    @property
+    def quota_per(self):
+        """"1,500 a week" — the number and its period, which must not be split."""
+        return "{:,} a {}".format(self.quota, self.per)
 
     @classmethod
     def _from(cls, d):
@@ -111,6 +125,9 @@ class Usage:
             quota=int(req.get("quota", 0)),
             remaining=int(req.get("remaining", 0)),
             resets=int(req.get("resets", 0)),
+            # A server from before the weekly free tier sends no `per`, and
+            # everything it metered was daily, so that is the honest default.
+            per=str(req.get("per") or "day"),
             streams_open=int(st.get("open", 0)),
             streams_limit=int(st.get("limit", 0)),
             instruments_per_stream=st.get("instrumentsPerStream"),
@@ -180,7 +197,7 @@ class Client:
         if s == 429:
             # Same status, two different problems. On a stream it means the
             # account is at its own concurrent-stream limit; elsewhere it means
-            # the daily request quota is spent. Telling them apart is the whole
+            # the request quota for the window is spent. Telling them apart is the whole
             # reason this function exists.
             cls = TooManyStreams if stream else QuotaExceeded
             return cls(msg or "limit reached", s, body)
@@ -279,7 +296,7 @@ class Client:
 
         One connection carrying ten instruments costs one request and one
         stream slot -- the same as carrying one. That is the difference between
-        following a watchlist and exhausting a daily quota polling it: fifty
+        following a watchlist and exhausting a request quota polling it: fifty
         pairs asked for once a minute is 72,000 requests a day, while fifty
         pairs on one stream is one. Every Tick carries its own `symbol`, so a
         single loop can sort them.

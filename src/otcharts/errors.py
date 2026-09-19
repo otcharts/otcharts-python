@@ -52,7 +52,12 @@ class NotFound(OTChartsError):
 
 
 class QuotaExceeded(OTChartsError):
-    """429 on a request -- the plan's daily request quota is spent."""
+    """429 on a request -- the plan's request quota for the window is spent.
+
+    The window is the plan's, not the calendar's: free counts by the WEEK, every
+    paid plan by the day. `Usage.per` says which, and `Usage.resets` is when it
+    turns over -- sleep until that rather than until midnight.
+    """
 
 
 class TooManyStreams(OTChartsError):

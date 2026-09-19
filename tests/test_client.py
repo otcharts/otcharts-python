@@ -235,9 +235,19 @@ class TestUsage(Base):
     BODY = json.dumps({
         "plan": "api_build", "planName": "Build", "expires": 1791138947,
         "books": ["otc"],
-        "requests": {"used": 17774, "quota": 25000, "remaining": 7226, "resets": 1788566400},
+        "requests": {"used": 17774, "quota": 25000, "remaining": 7226,
+                     "resets": 1788566400, "per": "day"},
         "streams": {"open": 1, "limit": 1, "instrumentsPerStream": 10},
         "keys": 2,
+    })
+    # The free tier: ONE book, and a quota over a WEEK rather than a day.
+    FREE = json.dumps({
+        "plan": "api_free", "planName": "Free", "expires": None,
+        "books": ["otc"],
+        "requests": {"used": 30, "quota": 1500, "remaining": 1470,
+                     "resets": 1789948800, "per": "week"},
+        "streams": {"open": 0, "limit": 1, "instrumentsPerStream": 5},
+        "keys": 1,
     })
 
     def test_usage_reads_every_figure(self):
@@ -250,6 +260,31 @@ class TestUsage(Base):
         self.assertEqual(u.instruments_per_stream, 10)
         self.assertEqual(u.books, ("otc",))
         self.assertEqual(u.keys, 2)
+        self.assertEqual(u.per, "day")
+        self.assertEqual(u.quota_per, "25,000 a day")
+
+    def test_the_free_tier_counts_by_the_week(self):
+        """1,500 a week and 1,500 a day are very different products.
+
+        A client that prints `quota` without `per` states a number over an
+        unstated period, which is how somebody budgets a week's allowance as a
+        day's and is refused on the first afternoon.
+        """
+        ROUTES["/v1/usage"] = (200, {}, self.FREE)
+        u = self.client().usage()
+        self.assertEqual((u.plan, u.quota, u.per), ("api_free", 1500, "week"))
+        self.assertEqual(u.quota_per, "1,500 a week")
+        self.assertEqual(u.books, ("otc",), "the free tier opens ONE book")
+        self.assertEqual(u.streams_limit, 1)
+        self.assertEqual(u.instruments_per_stream, 5)
+
+    def test_a_server_without_per_is_read_as_daily(self):
+        """Everything metered before `per` existed was daily, so that is the
+        honest default rather than a guess or a crash."""
+        body = json.loads(self.BODY)
+        del body["requests"]["per"]
+        ROUTES["/v1/usage"] = (200, {}, json.dumps(body))
+        self.assertEqual(self.client().usage().per, "day")
 
     def test_desk_reports_no_instrument_ceiling(self):
         """None, not 0 -- Desk carries the whole book on one connection."""

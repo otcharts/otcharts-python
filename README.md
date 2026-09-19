@@ -5,9 +5,9 @@ Quotex, IQ Option, BinoDex** — and the real institutional FX market, as JSON.
 One dependency-free Python package for trading research, backtesting and live
 signal work.
 
-**Free to try, with no card.** Every confirmed account reads five instruments on
-each of the five books, 1,000 requests a day, and one live stream. The example
-below runs on that.
+**Free to try, with no card.** Every confirmed account reads one book of its
+choosing, five instruments on it, 1,500 requests a week, and one live stream.
+The example below runs on that.
 
 ```bash
 pip install otcharts
@@ -75,11 +75,21 @@ expires:
 
 | | free tier |
 |---|---|
-| books | all five |
-| instruments per book | five, the same five the free chart opens |
-| requests a day | 1,000 |
+| books | one, whichever you pick — switchable any time |
+| instruments on it | five, the same five the free chart opens |
+| requests | **1,500 a week** |
 | live streams | one, carrying those five |
 | keys | five, each named and revocable |
+
+The free tier counts by the **week**; every paid plan counts by the day.
+`usage().per` tells you which and `usage().resets` is when the window turns
+over, so nothing has to assume a midnight that may not be the right boundary:
+
+```python
+u = otc.usage()
+print(u.quota_per)        # "1,500 a week"  — the number and its period together
+print(u.remaining, "left until", u.resets)
+```
 
 `symbols(venue)` lists exactly what your key can read, so on the free tier it
 returns those five rather than a catalogue of refusals. Asking for a sixth
@@ -121,7 +131,7 @@ from otcharts import QuotaExceeded, TooManyStreams, HouseBusy, PlanError
 
 try:
     ...
-except QuotaExceeded:      # 429 on a request — daily request quota spent
+except QuotaExceeded:      # 429 on a request — the window's quota is spent
     ...
 except TooManyStreams:     # 429 on a stream — YOUR account's concurrent limit
     ...                    #   close one of your streams
