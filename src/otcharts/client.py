@@ -36,7 +36,7 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.5.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.6.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)

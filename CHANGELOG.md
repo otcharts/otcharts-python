@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.5.0
+## 0.6.0
 
-Pages back through a book's archive, and says something when `candles()` is
-being used as a live feed.
+Pages back through a book's archive. This was written as part of 0.5.0, but
+that Release was cut from the commit before it landed, so 0.5.0 on PyPI
+carries only the polling warning below and this is its own version.
 
 - **`candles(..., before=)`** — the newest `limit` bars strictly older than a
   unix time, out of the venue's archive rather than the live window. Chain the
@@ -23,6 +24,12 @@ being used as a live feed.
   bars (500 on Quotex), so a larger `page` costs the same.
 - A `before=` page is never counted as polling: it asks for bars that were
   final before the request was made.
+- Nothing renamed, nothing removed: 0.5.0 code runs unchanged.
+
+## 0.5.0
+
+Says something when `candles()` is being used as a live feed.
+
 - **A warning the first time `candles()` is asked for the same instrument
   again before its bar can have changed.** Asking for a 60-second bar twice
   inside 60 seconds cannot return anything new: the newest bar has not closed
@@ -37,8 +44,8 @@ being used as a live feed.
   it is trying to deliver. Fetching history for five different instruments is
   not polling and says nothing, and neither is re-asking after the bar has
   actually closed.
-- Nothing renamed, nothing removed: 0.4.0 code runs unchanged. The warning is
-  `warnings.warn`, so `-W ignore` silences it and no behaviour depends on it.
+- Nothing else changed. It is `warnings.warn`, so `-W ignore` silences it and
+  no behaviour depends on it.
 
 ## 0.4.0
 
