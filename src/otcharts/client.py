@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass
 
 from .errors import (
@@ -33,7 +34,7 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.4.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.5.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,11 @@ class Client:
         self.api_key = key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # When each (venue, symbol, tf) was last asked for, so candles() can
+        # notice it is being polled. Bounded by the number of instruments a
+        # caller actually uses, which a plan caps anyway.
+        self._last_candles = {}
+        self._warned_polling = False
 
     # ── plumbing ───────────────────────────────────────────────────────────
     def _request(self, path, params=None, stream=False):
@@ -255,11 +261,60 @@ class Client:
         """
         if not 1 <= limit <= 5000:
             raise ValueError("limit must be between 1 and 5000")
+        self._note_candles(venue, symbol, tf)
         with self._request("/v1/candles", {
             "venue": venue, "symbol": symbol, "tf": tf, "limit": limit,
         }) as r:
             data = json.loads(r.read().decode())
         return [Candle._from(c) for c in data.get("candles", [])]
+
+    def _note_candles(self, venue, symbol, tf):
+        """Say something the first time candles() is used as a live feed.
+
+        WHY THIS IS IN THE LIBRARY. Asking for the same bars on a timer is the
+        most common mistake made against this API by a wide margin -- 57 candle
+        requests for every stream -- and it is what empties a free allowance in
+        an afternoon. The server already refuses clearly when the allowance is
+        gone, and the refusal goes unread, because by then the caller is a loop
+        and nobody is watching. A warning in the caller's own console arrives
+        while there is still something to change.
+
+        The test is not a guess: asking for a tf-second bar again before tf
+        seconds have passed cannot return anything new. The newest bar has not
+        closed and every older one is already final, so the answer is the
+        previous answer.
+
+        Once per client, not once per call -- a loop would otherwise bury the
+        message it is trying to deliver.
+        """
+        if self._warned_polling:
+            return
+        try:
+            tf = int(tf)
+        except (TypeError, ValueError):
+            return
+        if tf <= 0:
+            return
+        now = time.monotonic()
+        key = (venue, str(symbol), tf)
+        last = self._last_candles.get(key)
+        self._last_candles[key] = now
+        if last is None or now - last >= tf:
+            return
+        self._warned_polling = True
+        warnings.warn(
+            "otcharts: candles(%r, %r, tf=%d) was called again after %.1fs. "
+            "A %d-second bar only changes every %d seconds, so this answer is "
+            "the last one. Polling like this is what exhausts a request "
+            "allowance: five instruments once a minute is 7,200 requests a day, "
+            "while the same five on ONE stream is one request. Use "
+            "candles() once for history, then stream() for what follows:\n"
+            "    for tick in otc.stream(%r, [%r]):\n"
+            "        print(tick.symbol, tick.price)\n"
+            "See https://otcharts.com/api#stream"
+            % (venue, symbol, tf, now - last, tf, tf, venue, symbol),
+            stacklevel=3,
+        )
 
     @staticmethod
     def _symbol_param(symbol):

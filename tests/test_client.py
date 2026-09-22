@@ -6,6 +6,8 @@ header, the status handling and the SSE parsing are all genuinely exercised --
 and no test touches the network.
 """
 import json
+import time
+import warnings
 import os
 import threading
 import unittest
@@ -349,3 +351,58 @@ class TestPackage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPollingWarning(Base):
+    """candles() on a timer says so, in the caller's own console.
+
+    WHY. Asking for the same bars again before the bar can have changed is the
+    most common mistake made against this API -- 57 candle requests for every
+    stream -- and it is what empties a free allowance in an afternoon. The
+    server's refusal, when it finally comes, is read by nobody: the caller is a
+    loop. A warning here arrives while there is still something to change.
+    """
+
+    def setUp(self):
+        ROUTES["/v1/candles"] = (200, {}, json.dumps({"candles": []}))
+
+    def test_asking_again_inside_the_bar_warns(self):
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            otc.candles("otc", "EURUSD_otc", tf=60)   # first ask: nothing to say
+            self.assertEqual(len(caught), 0, "one call is not polling")
+            otc.candles("otc", "EURUSD_otc", tf=60)   # again, well inside 60s
+            self.assertEqual(len(caught), 1)
+            said = str(caught[0].message)
+        self.assertIn("stream()", said, "it must name the fix")
+        self.assertIn("7,200", said, "the arithmetic is the argument")
+        self.assertIn("api#stream", said)
+
+    def test_it_warns_once_not_once_per_call(self):
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for _ in range(50):
+                otc.candles("otc", "EURUSD_otc", tf=60)
+        self.assertEqual(len(caught), 1, "a loop must not bury its own warning")
+
+    def test_different_instruments_are_not_polling(self):
+        """Five instruments fetched once each is the CORRECT first call."""
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for sym in ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc",
+                        "AUDUSD_otc", "BTCUSD_otc"]:
+                otc.candles("otc", sym, tf=60)
+        self.assertEqual(len(caught), 0, "history for five pairs is not a poll")
+
+    def test_waiting_out_the_bar_is_not_polling(self):
+        """Re-asking AFTER the bar closed is legitimate; it returns a new bar."""
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            otc.candles("otc", "EURUSD_otc", tf=1)
+            time.sleep(1.05)
+            otc.candles("otc", "EURUSD_otc", tf=1)
+        self.assertEqual(len(caught), 0, "a closed bar is new data, not a re-ask")

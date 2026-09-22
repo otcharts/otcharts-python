@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0
+
+Says something when `candles()` is being used as a live feed.
+
+- **A warning the first time `candles()` is asked for the same instrument
+  again before its bar can have changed.** Asking for a 60-second bar twice
+  inside 60 seconds cannot return anything new: the newest bar has not closed
+  and every older one is already final, so the answer is the previous answer.
+  This is the most common mistake made against this API by a wide margin — 57
+  candle requests for every stream — and it is what empties a request
+  allowance in an afternoon. The server refuses clearly when the allowance is
+  gone, and the refusal is read by nobody, because by then the caller is a
+  loop. The warning arrives while there is still something to change, and it
+  carries the fix as code you can paste.
+- Once per client, not once per call: a loop would otherwise bury the message
+  it is trying to deliver. Fetching history for five different instruments is
+  not polling and says nothing, and neither is re-asking after the bar has
+  actually closed.
+- Nothing else changed. It is `warnings.warn`, so `-W ignore` silences it and
+  no behaviour depends on it.
 ## 0.4.0
 
 The free tier changed shape on the server, and a client that reports a quota
