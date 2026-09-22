@@ -11,6 +11,7 @@ import warnings
 import os
 import threading
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import otcharts
@@ -21,17 +22,24 @@ from otcharts import (
 )
 
 ROUTES = {}          # path -> (status, headers, body)
+DYNAMIC = {}         # path -> f(query dict) -> (status, headers, body); wins over ROUTES
 SEEN = {}            # path -> the full request line, query and all
+CALLS = []           # every request line, in order
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.split("?")[0]
+        path, _, query = self.path.partition("?")
         SEEN[path] = self.path
+        CALLS.append(self.path)
         if self.headers.get("Authorization") != "Bearer test-key":
             self._send(401, {}, json.dumps({"error": "key refused"}))
             return
-        status, headers, body = ROUTES.get(path, (404, {}, '{"error":"nope"}'))
+        if path in DYNAMIC:
+            q = dict(urllib.parse.parse_qsl(query))
+            status, headers, body = DYNAMIC[path](q)
+        else:
+            status, headers, body = ROUTES.get(path, (404, {}, '{"error":"nope"}'))
         self._send(status, headers, body)
 
     def _send(self, status, headers, body):
@@ -379,6 +387,16 @@ class TestPollingWarning(Base):
         self.assertIn("7,200", said, "the arithmetic is the argument")
         self.assertIn("api#stream", said)
 
+    def test_it_points_at_the_callers_line_not_ours(self):
+        """A warning attributed to client.py reads as a bug in the library.
+        0.5.0 nearly shipped that way when candles() gained a frame."""
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            otc.candles("otc", "EURUSD_otc", tf=60)
+            otc.candles("otc", "EURUSD_otc", tf=60)
+        self.assertEqual(os.path.basename(caught[0].filename), "test_client.py")
+
     def test_it_warns_once_not_once_per_call(self):
         otc = self.client()
         with warnings.catch_warnings(record=True) as caught:
@@ -406,3 +424,208 @@ class TestPollingWarning(Base):
             time.sleep(1.05)
             otc.candles("otc", "EURUSD_otc", tf=1)
         self.assertEqual(len(caught), 0, "a closed bar is new data, not a re-ask")
+
+
+# ── paging back through a book's archive ────────────────────────────────────
+
+def archive(times, cap=None, flag=True):
+    """A /v1/candles that pages like the real one.
+
+    Without `before` it answers the live window (the newest `limit` bars).
+    With it, the newest `limit` bars STRICTLY older than the anchor, and
+    `exhausted: true` when nothing older than that page exists. `cap` trims a
+    page the way a venue does whatever `limit` asked for (1,500 on most books,
+    500 on Quotex); `flag=False` is a server that never sends `exhausted`.
+    """
+    def handle(q):
+        limit = int(q.get("limit", 300))
+        if cap:
+            limit = min(limit, cap)
+        before = q.get("before")
+        pool = [t for t in times if before is None or t < int(before)]
+        page = pool[-limit:]
+        body = {"candles": [{"time": t, "open": 1.0, "high": 1.0, "low": 1.0,
+                             "close": float(t)} for t in page]}
+        if before is not None and flag:
+            body["exhausted"] = len(pool) <= limit
+        return 200, {}, json.dumps(body)
+    return handle
+
+
+class TestBefore(Base):
+    """candles(before=) -- the wire, and what is refused before it."""
+
+    def setUp(self):
+        DYNAMIC.pop("/v1/candles", None)
+        ROUTES["/v1/candles"] = (200, {}, json.dumps({"candles": []}))
+        del CALLS[:]
+
+    def test_before_is_sent_as_a_query_parameter(self):
+        self.client().candles("otc", "EURUSD_otc", tf=60, limit=20, before=1790000000)
+        self.assertIn("before=1790000000", SEEN["/v1/candles"])
+        self.assertIn("limit=20", SEEN["/v1/candles"])
+
+    def test_without_before_nothing_new_is_sent(self):
+        """0.4.0 code must make exactly the request it always made."""
+        self.client().candles("otc", "EURUSD_otc")
+        self.assertNotIn("before", SEEN["/v1/candles"])
+
+    def test_a_bad_anchor_is_refused_before_it_spends_a_request(self):
+        import datetime
+        otc = self.client()
+        for bad in (0, -1, "abc", True, datetime.datetime(2026, 9, 22)):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                otc.candles("otc", "EURUSD_otc", before=bad)
+        self.assertEqual(CALLS, [], "nothing must reach the server")
+
+    def test_a_before_page_is_not_polling(self):
+        """Paging asks for bars that were final before the request was made;
+        re-asking is a walk, not a poll, and must not trip the warning."""
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for n in range(20):
+                otc.candles("otc", "EURUSD_otc", tf=60, before=1790000000 - 60 * n)
+        self.assertEqual(len(caught), 0)
+
+
+T0 = 1_790_000_000
+TIMES = [T0 + 60 * i for i in range(1000)]          # 1,000 minute bars
+
+
+class TestHistory(Base):
+    """history() walks a book back a page at a time, newest first."""
+
+    TIMES = TIMES
+
+    def setUp(self):
+        DYNAMIC["/v1/candles"] = archive(self.TIMES)
+        del CALLS[:]
+
+    def tearDown(self):
+        DYNAMIC.pop("/v1/candles", None)
+
+    def test_it_walks_to_the_beginning_newest_first_without_repeats(self):
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, page=300))
+        self.assertEqual([b.time for b in got], list(reversed(self.TIMES)))
+        # 300 live, 300, 300, then 100 flagged exhausted: FOUR requests, not a
+        # fifth to discover an empty page.
+        self.assertEqual(len(CALLS), 4)
+        self.assertNotIn("before", CALLS[0], "the first page is the live window")
+        self.assertIn("before=%d" % self.TIMES[700], CALLS[1])
+        self.assertIn("before=%d" % self.TIMES[100], CALLS[3])
+
+    def test_since_stops_the_walk_and_trims_the_page(self):
+        since = self.TIMES[450]
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, since=since, page=300))
+        self.assertEqual([b.time for b in got], list(reversed(self.TIMES[450:])))
+        self.assertEqual(len(CALLS), 2, "the page that crosses `since` is the last")
+
+    def test_a_bar_at_since_is_included_and_asks_no_further(self):
+        since = self.TIMES[400]                       # exactly a page boundary
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, since=since, page=300))
+        self.assertEqual(got[-1].time, since)
+        self.assertEqual(len(CALLS), 2, "nothing older is wanted, so nothing is asked")
+
+    def test_a_venue_that_trims_the_page_does_not_end_the_walk(self):
+        """Quotex answers 500 bars whatever `limit` says; a short page is not
+        the end of the archive, only the flag (or an empty page) is."""
+        DYNAMIC["/v1/candles"] = archive(self.TIMES, cap=100)
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, page=450))
+        self.assertEqual(len(got), 1000)
+        self.assertEqual(len(CALLS), 10)
+
+    def test_a_server_without_the_flag_ends_on_an_empty_page(self):
+        DYNAMIC["/v1/candles"] = archive(self.TIMES, flag=False)
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, page=250))
+        self.assertEqual(len(got), 1000)
+        self.assertEqual(len(CALLS), 5, "four pages, then the empty one that says stop")
+
+    def test_before_resumes_a_walk_instead_of_starting_at_the_live_window(self):
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60,
+                                         before=self.TIMES[200], page=300))
+        self.assertEqual([b.time for b in got], list(reversed(self.TIMES[:200])))
+        self.assertIn("before=%d" % self.TIMES[200], CALLS[0])
+
+    def test_a_venue_that_ignores_before_cannot_loop_forever(self):
+        """The live window again and again, whatever the anchor: the strict
+        filter empties the second page and the walk ends."""
+        DYNAMIC["/v1/candles"] = lambda q: archive(self.TIMES)({"limit": q.get("limit", 300)})
+        got = list(self.client().history("otc", "EURUSD_otc", tf=60, page=300))
+        self.assertEqual(len(got), 300)
+        self.assertEqual(len(CALLS), 2)
+
+    def test_a_sloppy_anchor_bar_is_dropped_not_yielded_twice(self):
+        """IQ once answered the bar AT the anchor as well; strictly older means
+        strictly older, whatever the venue sends."""
+        base = archive(self.TIMES)
+        def sloppy(q):
+            status, h, body = base(q)
+            d = json.loads(body)
+            if "before" in q:
+                b = int(q["before"])
+                d["candles"].append({"time": b, "open": 1, "high": 1, "low": 1, "close": 1})
+            return status, h, json.dumps(d)
+        DYNAMIC["/v1/candles"] = sloppy
+        got = [b.time for b in self.client().history("otc", "EURUSD_otc", tf=60, page=300)]
+        self.assertEqual(got, list(reversed(self.TIMES)))
+
+    def test_an_empty_book_yields_nothing(self):
+        DYNAMIC["/v1/candles"] = archive([])
+        self.assertEqual(list(self.client().history("otc", "EURUSD_otc")), [])
+        self.assertEqual(len(CALLS), 1)
+
+    def test_it_is_not_polling(self):
+        otc = self.client()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            otc.candles("otc", "EURUSD_otc", tf=60)
+            list(otc.history("otc", "EURUSD_otc", tf=60, page=300))
+        self.assertEqual(len(caught), 0, "a walk right after a read is not a poll")
+
+    def test_page_and_since_are_checked_first(self):
+        otc = self.client()
+        for bad in (0, 5001):
+            with self.assertRaises(ValueError):
+                next(otc.history("otc", "EURUSD_otc", page=bad))
+        with self.assertRaises(ValueError) as caught:
+            next(otc.history("otc", "EURUSD_otc", since="yesterday"))
+        self.assertIn("since", str(caught.exception), "names the argument that is wrong")
+        self.assertEqual(CALLS, [])
+
+    def test_the_free_tier_gets_the_live_window_then_a_plan_error_with_the_link(self):
+        """Worded as the server words it, on the page behind the live window."""
+        live = archive(self.TIMES)
+        def free(q):
+            if "before" in q:
+                return 403, {}, json.dumps({"error":
+                    "before= pages back past the live window, which is part of "
+                    "the paid API tiers — Build and up: https://otcharts.com/pricing#api"})
+            return live(q)
+        DYNAMIC["/v1/candles"] = free
+        gen = self.client().history("otc", "EURUSD_otc", tf=60, page=300)
+        got = []
+        with self.assertRaises(PlanError) as caught:
+            for b in gen:
+                got.append(b)
+        self.assertEqual(len(got), 300, "the live window arrives first")
+        self.assertEqual(caught.exception.status, 403)
+        self.assertIn("pricing#api", str(caught.exception))
+
+    def test_a_refusal_without_the_link_gains_it(self):
+        """The link is the one thing the caller needs from that refusal."""
+        DYNAMIC["/v1/candles"] = lambda q: (403, {}, json.dumps({"error": "no"})) \
+            if "before" in q else archive(self.TIMES)(q)
+        with self.assertRaises(PlanError) as caught:
+            list(self.client().history("otc", "EURUSD_otc", tf=60))
+        self.assertIn("pricing#api", str(caught.exception))
+        self.assertIn("no", str(caught.exception), "the server's own words survive")
+
+    def test_binodex_surfaces_the_servers_refusal(self):
+        DYNAMIC["/v1/candles"] = lambda q: (400, {}, json.dumps({"error":
+            "binodex keeps no history beyond its live window yet; drop before= to read the window"})) \
+            if "before" in q else archive(self.TIMES)(q)
+        with self.assertRaises(otcharts.OTChartsError) as caught:
+            list(self.client().history("binodex", "EUR/USD-OTC", tf=60))
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("keeps no history", str(caught.exception))

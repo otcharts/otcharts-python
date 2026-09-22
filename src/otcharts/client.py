@@ -11,6 +11,8 @@ installs one package and cannot conflict with anything you already have.
 
     otc = Client()                                  # reads OTCHARTS_API_KEY
     bars = otc.candles("quotex", "EURUSD_otc", tf=60, limit=300)
+    for bar in otc.history("forex", "EURUSD", tf=60, since=1_756_684_800):
+        ...                                         # pages back, newest first
     for tick in otc.stream("quotex", "EURUSD_otc"):
         print(tick.time, tick.price)
 
@@ -254,19 +256,135 @@ class Client:
         with self._request("/v1/usage") as r:
             return Usage._from(json.loads(r.read().decode()))
 
-    def candles(self, venue, symbol, tf=60, limit=300):
+    def candles(self, venue, symbol, tf=60, limit=300, before=None):
         """Recorded bars from the venue's own history, oldest first.
 
-        tf is in seconds; limit is 1-5000.
+        tf is in seconds; limit is 1-5000. Without `before` this is the live
+        window: the newest `limit` bars the book holds right now.
+
+        `before`, a unix time in seconds, pages BACKWARD: the newest `limit`
+        bars strictly older than it, out of the venue's archive. Pass the
+        oldest `time` you hold and the page before it comes back, so a caller
+        walks back by chaining calls -- which is what history() does for you,
+        and it also reads the reply's `exhausted` flag, which this method does
+        not expose. The clock is the venue's own: Pocket Option (`otc`) stamps
+        its bars two hours ahead of UTC, the other books are true UTC. Anchor
+        on a `time` the server gave you rather than one you computed and the
+        difference never matters.
+
+        Paid API tiers only, Build and up. The free tier reads the live window
+        and raises PlanError on `before`, with the pricing link in the message.
+        BinoDex keeps no archive yet and refuses `before` with a 400. A page is
+        at most 1,500 bars whatever `limit` says (500 on Quotex), so a SHORT
+        page is not the end of the archive -- only an empty one is.
+        """
+        bars, _ = self._page(venue, symbol, tf, limit, before)
+        return bars
+
+    def _page(self, venue, symbol, tf, limit, before, note=True):
+        """One /v1/candles call -> (bars oldest first, exhausted).
+
+        `exhausted` is only ever true on a `before` page; the live window does
+        not carry the flag and reads as False.
         """
         if not 1 <= limit <= 5000:
             raise ValueError("limit must be between 1 and 5000")
-        self._note_candles(venue, symbol, tf)
-        with self._request("/v1/candles", {
-            "venue": venue, "symbol": symbol, "tf": tf, "limit": limit,
-        }) as r:
+        params = {"venue": venue, "symbol": symbol, "tf": tf, "limit": limit}
+        if before is not None:
+            params["before"] = self._anchor(before)
+        elif note:
+            # Only the live window can be polled. A `before` page asks for
+            # bars that were final before the request was made, so re-asking
+            # is a walk, not a poll, and must not trip the warning.
+            self._note_candles(venue, symbol, tf)
+        with self._request("/v1/candles", params) as r:
             data = json.loads(r.read().decode())
-        return [Candle._from(c) for c in data.get("candles", [])]
+        bars = [Candle._from(c) for c in data.get("candles", [])]
+        return bars, bool(data.get("exhausted", False))
+
+    @staticmethod
+    def _anchor(before, name="before"):
+        """`before` as the server wants it: a positive whole number of seconds.
+
+        Checked here so a bad anchor fails before it spends a request. A
+        datetime is refused rather than converted, because a naive one would
+        silently be read in local time and land hours out -- pass
+        int(dt.timestamp()) and decide the zone yourself.
+        """
+        if isinstance(before, bool):
+            raise ValueError(name + " must be a unix time in seconds")
+        try:
+            n = int(before)
+        except (TypeError, ValueError):
+            raise ValueError(
+                name + " must be a unix time in whole seconds, on the venue's "
+                "clock; for a datetime pass int(dt.timestamp())") from None
+        if n <= 0:
+            raise ValueError(name + " must be a unix time in seconds")
+        return n
+
+    def history(self, venue, symbol, tf=60, since=None, before=None, page=450):
+        """Every bar the venue holds, walking BACKWARD a page at a time.
+
+        A generator of Candle, NEWEST FIRST -- it walks backward, so it yields
+        backward. `reversed(list(...))` puts them in chronological order:
+
+            bars = list(otc.history("forex", "EURUSD", tf=60, since=1_756_684_800))
+            bars.reverse()                              # oldest first
+
+        It starts from the live window, then asks for the `page` bars before
+        the oldest one it has seen, and again, until the venue reports that it
+        holds nothing older (`exhausted`) or a bar older than `since` arrives.
+        `since` is a unix time in seconds on the venue's clock -- Pocket
+        Option's runs two hours ahead of UTC, the others are true UTC -- and
+        bars older than it are not yielded. Pass `before` (same clock) to start
+        from there instead of the live window: that is how a walk that was
+        interrupted is resumed, from the oldest `time` it had reached. Nothing
+        here retries.
+
+        Every page is one request against the plan's quota. A year of 1-minute
+        bars is about 525,600 of them, so roughly 1,170 pages of 450; the
+        venues answer up to 1,500 a page (Quotex 500) and trim anything larger,
+        so a `page` above the cap costs the same requests as one at it.
+
+        Paid API tiers only, Build and up. On the free tier the live window
+        arrives and the first page behind it raises PlanError, whose message
+        carries the pricing link. BinoDex keeps no archive yet and refuses to
+        page with a 400, which surfaces as OTChartsError with its message.
+        """
+        if not 1 <= page <= 5000:
+            raise ValueError("page must be between 1 and 5000")
+        if since is not None:
+            since = self._anchor(since, "since")
+        anchor = None if before is None else self._anchor(before)
+        while True:
+            try:
+                bars, exhausted = self._page(venue, symbol, tf, page, anchor, note=False)
+            except PlanError as e:
+                # The server's refusal names the plans and links the pricing
+                # page. Should an older server not, the link is the one thing
+                # the caller needs, so make sure it is there.
+                if anchor is not None and "pricing" not in str(e):
+                    raise PlanError(
+                        str(e) + " -- paging back past the live window is part "
+                        "of the paid API tiers, Build and up: "
+                        "https://otcharts.com/pricing#api", e.status, e.body) from None
+                raise
+            if anchor is not None:
+                # Strictly older, even if a venue is sloppy about its anchor.
+                # This is also what guarantees the walk ends: every page moves
+                # the anchor strictly back, or is empty and stops it.
+                bars = [b for b in bars if b.time < anchor]
+            if not bars:
+                return
+            bars.sort(key=lambda b: b.time)
+            for b in reversed(bars):
+                if since is not None and b.time < since:
+                    return
+                yield b
+            if exhausted or (since is not None and bars[0].time <= since):
+                return
+            anchor = bars[0].time
 
     def _note_candles(self, venue, symbol, tf):
         """Say something the first time candles() is used as a live feed.
@@ -313,7 +431,9 @@ class Client:
             "        print(tick.symbol, tick.price)\n"
             "See https://otcharts.com/api#stream"
             % (venue, symbol, tf, now - last, tf, tf, venue, symbol),
-            stacklevel=3,
+            # _note_candles <- _page <- candles <- the caller's line, which is
+            # the one the warning must point at, or it reads as our bug.
+            stacklevel=4,
         )
 
     @staticmethod

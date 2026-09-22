@@ -5,6 +5,8 @@
     from otcharts import Client
     otc = Client()                                   # reads OTCHARTS_API_KEY
     bars = otc.candles("iq", "EURUSD-OTC", tf=60, limit=300)
+    for bar in otc.history("iq", "EURUSD-OTC", tf=60, since=1_756_684_800):
+        ...                                          # pages back, newest first
 
     for i in otc.symbols("otc"):                     # never guess an id
         print(i.symbol, i.name)

@@ -2,8 +2,27 @@
 
 ## 0.5.0
 
-Says something when `candles()` is being used as a live feed.
+Pages back through a book's archive, and says something when `candles()` is
+being used as a live feed.
 
+- **`candles(..., before=)`** — the newest `limit` bars strictly older than a
+  unix time, out of the venue's archive rather than the live window. Chain the
+  oldest `time` you hold and you walk back as far as the venue keeps: about two
+  years of 1-minute bars on the real market, a year on Pocket Option. The clock
+  is the venue's own (Pocket Option's runs two hours ahead of UTC), so anchor
+  on a `time` the server gave you. Paid API tiers, Build and up: the free tier
+  raises `PlanError` with the pricing link, and BinoDex, which keeps no archive
+  yet, refuses with a 400.
+- **`history(venue, symbol, tf, since=, page=450)`** — a generator that does
+  the chaining: the live window, then the page before it, and so on, until the
+  reply says `exhausted` or a bar older than `since` arrives. Newest first,
+  because it walks backward. It reads the flag so it stops one request early
+  instead of asking for an empty page, filters strictly-older itself so a
+  sloppy venue cannot make it loop, and takes `before=` to resume a walk that
+  was interrupted. Every page is one request; the venues trim a page to 1,500
+  bars (500 on Quotex), so a larger `page` costs the same.
+- A `before=` page is never counted as polling: it asks for bars that were
+  final before the request was made.
 - **A warning the first time `candles()` is asked for the same instrument
   again before its bar can have changed.** Asking for a 60-second bar twice
   inside 60 seconds cannot return anything new: the newest bar has not closed
@@ -18,8 +37,9 @@ Says something when `candles()` is being used as a live feed.
   it is trying to deliver. Fetching history for five different instruments is
   not polling and says nothing, and neither is re-asking after the bar has
   actually closed.
-- Nothing else changed. It is `warnings.warn`, so `-W ignore` silences it and
-  no behaviour depends on it.
+- Nothing renamed, nothing removed: 0.4.0 code runs unchanged. The warning is
+  `warnings.warn`, so `-W ignore` silences it and no behaviour depends on it.
+
 ## 0.4.0
 
 The free tier changed shape on the server, and a client that reports a quota

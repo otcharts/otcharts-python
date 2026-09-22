@@ -80,6 +80,7 @@ expires:
 | requests | **1,500 a week** |
 | live streams | one, carrying those five |
 | keys | five, each named and revocable |
+| older history | the live window only — `before=` and `history()` are Build and up |
 
 The free tier counts by the **week**; every paid plan counts by the day.
 `usage().per` tells you which and `usage().resets` is when the window turns
@@ -137,8 +138,8 @@ except TooManyStreams:     # 429 on a stream — YOUR account's concurrent limit
     ...                    #   close one of your streams
 except HouseBusy as e:     # 503 — the service as a whole is at its ceiling.
     time.sleep(e.retry_after)   # not your fault, not fixed by upgrading
-except PlanError:          # 402 — key is fine, plan does not open this book
-    ...
+except PlanError:          # 402/403 — key is fine; the plan does not open this
+    ...                    #   book, this instrument, or paging back with before=
 ```
 
 `AuthError` (401) is worth one note: a password reset revokes every API key on the
@@ -197,6 +198,43 @@ Reconnection is on by default and is deliberately selective. Dropped sockets and
 key or a plan that does not open the book is **not** retried, because it will fail
 identically forever and a client hammering a 402 in a loop is a client that gets
 limited. Pass `reconnect=False` to handle it yourself.
+
+## Older history
+
+`candles()` reads the live window: the newest bars the book holds right now.
+Behind it sits each venue's archive — about two years of 1-minute bars on the
+real market, a year on Pocket Option — and `before=` pages back through it:
+
+```python
+older = otc.candles("forex", "EURUSD", tf=60, limit=450, before=bars[0].time)
+```
+
+`before` is a unix time in seconds and the reply is the newest `limit` bars
+**strictly older** than it, so chaining `bars[0].time` walks back. `history()`
+does the chaining for you, reads the reply's `exhausted` flag, and stops at
+`since`:
+
+```python
+bars = list(otc.history("forex", "EURUSD", tf=60, since=1_756_684_800))
+bars.reverse()                    # it walks backward, so it yields backward
+```
+
+Three things worth knowing before a long walk:
+
+- **Every page is one request.** A year of 1-minute bars is about 525,600 of
+  them, so roughly 1,170 pages of 450. The venues answer at most 1,500 bars a
+  page (Quotex 500) and trim anything larger, so a bigger `page` costs the
+  same number of requests.
+- **The clock is the venue's.** Pocket Option stamps its bars two hours ahead
+  of UTC; the other books are true UTC. `since` and `before` are read on that
+  clock, which is why anchoring on a `time` the server gave you is safer than
+  one you computed — `history()` only ever does the former.
+- **It is a paid feature, Build and up.** The free tier reads the live window
+  only: `history()` yields it, then raises `PlanError` with the pricing link.
+  BinoDex keeps no archive yet and refuses `before=` with a 400.
+
+A walk that was interrupted resumes from the oldest `time` it reached:
+`history(..., before=oldest)`. Nothing is retried for you.
 
 ## pandas
 

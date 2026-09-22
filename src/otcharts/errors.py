@@ -34,10 +34,12 @@ class AuthError(OTChartsError):
 class PlanError(OTChartsError):
     """402 or 403 -- the key is good; the plan does not open what you asked for.
 
-    Three ways to arrive here, and the server's message says which: the account
+    Four ways to arrive here, and the server's message says which: the account
     holds no data plan (402), it holds one that does not carry this book (403),
-    or it is on the free tier and the instrument is outside the five that tier
-    opens on each book (403, and the message names the five). Said apart from
+    it is on the free tier and the instrument is outside the five that tier
+    opens on each book (403, and the message names the five), or it asked to
+    page back with `before` from the free tier, which reads the live window
+    only (403, and the message links the paid tiers). Said apart from
     AuthError on purpose: hunting for a bad key when the key is fine wastes an
     afternoon.
     """
