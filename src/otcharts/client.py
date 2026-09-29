@@ -36,12 +36,16 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.6.0 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.6.1 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
 class Candle:
-    """One recorded bar. `time` is the bar's OPEN, in whole seconds UTC."""
+    """One recorded bar. `time` is the bar's OPEN, in whole seconds.
+
+    UTC on every book except `otc`: Pocket Option stamps its bars on its own
+    clock, two hours ahead of UTC. Subtract 7200 before joining it to anything.
+    """
     time: int
     open: float
     high: float
@@ -56,7 +60,8 @@ class Candle:
 
 @dataclass(frozen=True)
 class Tick:
-    """One live price. `time` is whole seconds UTC."""
+    """One live price. `time` is whole seconds, on the same clock as that
+    book's candles: UTC, except Pocket Option (`otc`), two hours ahead."""
     time: int
     price: float
     symbol: str = ""

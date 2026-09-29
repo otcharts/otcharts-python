@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1
+
+Documentation only; no code changes.
+
+- The free tier's live stream carries **one** instrument (since 26 September
+  2026), and the free tier reads payout percentages as `null`. The README's first
+  example streamed three symbols, which a free key refuses; it now streams one.
+- `Candle.time` and `Tick.time` said UTC for every book. Pocket Option (`otc`)
+  stamps its bars on its own clock, two hours ahead of UTC; the docstrings and
+  the books table now say so.
+
 ## 0.6.0
 
 Pages back through a book's archive. This was written as part of 0.5.0, but

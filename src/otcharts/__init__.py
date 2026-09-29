@@ -22,7 +22,7 @@ from .errors import (
     QuotaExceeded, TooManyStreams, TransportError,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 __all__ = [
     "Client", "Candle", "Tick", "Venue", "Instrument", "Usage",
     "OTChartsError", "AuthError", "PlanError", "NotFound",

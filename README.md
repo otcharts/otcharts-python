@@ -6,7 +6,8 @@ One dependency-free Python package for trading research, backtesting and live
 signal work.
 
 **Free to try, with no card.** Every confirmed account reads one book of its
-choosing, five instruments on it, 1,500 requests a week, and one live stream.
+choosing, five instruments on it, 1,500 requests a week, and one live stream
+carrying one instrument.
 The example below runs on that.
 
 ```bash
@@ -24,8 +25,9 @@ for i in otc.symbols("otc"):                        # never guess an id
 bars = otc.candles("iq", "EURUSD-OTC", tf=60, limit=300)
 print(bars[-1].close)
 
-# A whole watchlist on ONE connection, for one request.
-for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"]):
+# Live prices. The free tier's stream carries one instrument; from Lite up a
+# Pocket Option stream carries a whole watchlist on one connection.
+for tick in otc.stream("otc", "EURUSD_otc"):
     print(tick.symbol, tick.price)
 ```
 
@@ -78,7 +80,8 @@ expires:
 | books | one, whichever you pick — switchable any time |
 | instruments on it | five, the same five the free chart opens |
 | requests | **1,500 a week** |
-| live streams | one, carrying those five |
+| live streams | one, carrying one instrument |
+| payout percentages | `null` — the data plans carry them |
 | keys | five, each named and revocable |
 | older history | the live window only — `before=` and `history()` are Build and up |
 
@@ -105,7 +108,7 @@ Ids are **not** portable between books. This catches everyone once:
 
 | venue | book | a symbol looks like |
 |---|---|---|
-| `otc` | Pocket Option | `EURUSD_otc`, `#AAPL_otc` (equities take a `#`) |
+| `otc` | Pocket Option | `EURUSD_otc`, `#AAPL_otc` (equities take a `#`); times are the broker's clock, UTC+2 |
 | `quotex` | Quotex | `EURUSD_otc` |
 | `iq` | IQ Option | `EURUSD-OTC` (hyphen, uppercase) |
 | `binodex` | BinoDex | `EUR/USD-OTC` (slash), `TRX-OTC` |
@@ -165,7 +168,8 @@ if u.remaining < 500:
 
 ## Streaming
 
-One connection, and it can carry **many instruments**:
+One connection, and on Pocket Option's book it can carry **many instruments**
+(from Lite up; the free tier's stream carries one):
 
 ```python
 for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"]):
