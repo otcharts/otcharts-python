@@ -5,10 +5,10 @@ Quotex, IQ Option, BinoDex** — and the real institutional FX market, as JSON.
 One dependency-free Python package for trading research, backtesting and live
 signal work.
 
-**Free to try, with no card.** Every confirmed account reads one book of its
-choosing, five instruments on it, 1,500 requests a week, and one live stream
-carrying one instrument.
-The example below runs on that.
+**Free to try, with no card.** Every confirmed account gets a free month on one
+book of its choosing: five instruments on it and 200 requests.
+The example below runs on that, apart from the live stream, which comes with the
+data plans.
 
 ```bash
 pip install otcharts
@@ -25,8 +25,8 @@ for i in otc.symbols("otc"):                        # never guess an id
 bars = otc.candles("iq", "EURUSD-OTC", tf=60, limit=300)
 print(bars[-1].close)
 
-# Live prices. The free tier's stream carries one instrument; from Lite up a
-# Pocket Option stream carries a whole watchlist on one connection.
+# Live prices come with the data plans (from Lite up). On Pocket Option and
+# Quotex one stream carries a whole watchlist on one connection.
 for tick in otc.stream("otc", "EURUSD_otc"):
     print(tick.symbol, tick.price)
 ```
@@ -72,26 +72,26 @@ cannot conflict with whatever you already have pinned.
    once, and only a hash is stored, so nobody can recover it afterwards, including us
 3. `export OTCHARTS_API_KEY=otc_live_...`
 
-That key works immediately on the **free tier**. No card, no trial clock, nothing
-expires:
+That key works immediately on the **free tier**: no card, one month from your first
+key, and it does not renew:
 
 | | free tier |
 |---|---|
 | books | one, whichever you pick — switchable any time |
 | instruments on it | five, the same five the free chart opens |
-| requests | **1,500 a week** |
-| live streams | one, carrying one instrument |
+| requests | **200**, in that first month |
+| live streams | none — live prices come with the data plans |
 | payout percentages | `null` — the data plans carry them |
 | keys | five, each named and revocable |
 | older history | the live window only — `before=` and `history()` are Build and up |
 
-The free tier counts by the **week**; every paid plan counts by the day.
+The free tier is one allowance for its first **month**; every paid plan counts by the day.
 `usage().per` tells you which and `usage().resets` is when the window turns
 over, so nothing has to assume a midnight that may not be the right boundary:
 
 ```python
 u = otc.usage()
-print(u.quota_per)        # "1,500 a week"  — the number and its period together
+print(u.quota_per)        # "200 a month"  — the number and its period together
 print(u.remaining, "left until", u.resets)
 ```
 
@@ -124,6 +124,24 @@ hand-written list goes stale silently — the first thing you notice is an empty
 response for a pair delisted weeks ago. `symbols()` is the live catalogue;
 [the cross-reference](https://otcharts.com/symbols) is the same thing for
 a human, all five books side by side.
+
+Each instrument also says whether you can trade it right now, and what it pays:
+
+```python
+for i in otc.symbols("quotex"):
+    if i.open is False:           # closed by the broker right now
+        continue
+    print(i.symbol, i.payout)     # the percentage paid on a winning contract
+```
+
+`open` is the broker's own flag, and `None` where a book does not say (Pocket
+Option, the real market). **On weekdays Quotex closes the OTC versions of the
+major pairs** — EUR/USD, EUR/CAD, AUD/JPY and others — and its traders use the
+real-market pairs instead. A closed OTC pair keeps printing a price nobody can
+trade, so a bot that compares it with the Quotex screen is looking at two
+different instruments. `payout` is `None` while a pair is closed, on the free
+tier, and on the real market, which has no payout at all. `is_otc` says whether
+an instrument is the broker's synthetic series rather than a real-market rate.
 
 ## Errors that tell you what to do
 
@@ -168,8 +186,8 @@ if u.remaining < 500:
 
 ## Streaming
 
-One connection, and on Pocket Option's book it can carry **many instruments**
-(from Lite up; the free tier's stream carries one):
+One connection, and on Pocket Option's and Quotex's books it can carry **many
+instruments** (from Lite up; the free tier has no stream):
 
 ```python
 for tick in otc.stream("otc", ["EURUSD_otc", "GBPUSD_otc", "XAUUSD_otc"]):
@@ -182,9 +200,10 @@ fifty pairs on one stream is **one**, and holding it costs nothing further.
 
 How many one stream may carry is a property of your plan —
 `usage().instruments_per_stream`, or `None` for no limit. Ask for more and the
-refusal names the number. Several instruments on one connection is a Pocket
-Option (`otc`) feature today; the other books take one symbol per stream,
-because there a second instrument really is a second connection.
+refusal names the number. Several instruments on one connection works on
+Pocket Option (`otc`) and Quotex (`quotex`); IQ, BinoDex and the real market
+take one symbol per stream, because there a second instrument really is a
+second connection.
 
 A single symbol still works exactly as before:
 

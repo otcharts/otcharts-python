@@ -238,6 +238,37 @@ class TestCatalogue(Base):
         ROUTES["/v1/symbols"] = (200, {}, json.dumps({"symbols": [{"symbol": "EURUSD"}]}))
         self.assertEqual(self.client().symbols("forex")[0].name, "EURUSD")
 
+    def test_open_payout_and_otc_come_through(self):
+        # Quotex on a weekday: the OTC major closed (no payout), an exotic open.
+        ROUTES["/v1/symbols"] = (200, {}, json.dumps({"venue": "quotex", "symbols": [
+            {"symbol": "EURCAD_otc", "name": "EUR/CAD (OTC)", "payout": None, "isOtc": True, "open": False},
+            {"symbol": "ATOUSD_otc", "name": "Cosmos (OTC)", "payout": 90, "isOtc": True, "open": True},
+        ]}))
+        closed, live = self.client().symbols("quotex")
+        self.assertIs(closed.open, False)
+        self.assertIsNone(closed.payout)
+        self.assertIs(live.open, True)
+        self.assertEqual(live.payout, 90.0)
+        self.assertIs(live.is_otc, True)
+        self.assertEqual([i.symbol for i in self.client().symbols("quotex") if i.open], ["ATOUSD_otc"])
+
+    def test_a_book_that_does_not_say_reads_as_not_known(self):
+        # Pocket Option sends open: null; an older server sends no field at all.
+        ROUTES["/v1/symbols"] = (200, {}, json.dumps({"symbols": [
+            {"symbol": "EURUSD_otc", "name": "EUR/USD OTC", "payout": 92, "isOtc": True, "open": None},
+            {"symbol": "GBPUSD_otc", "name": "GBP/USD OTC"},
+        ]}))
+        po, old = self.client().symbols("otc")
+        self.assertIsNone(po.open)
+        self.assertEqual(po.payout, 92.0)
+        self.assertIsNone(old.open)
+        self.assertIsNone(old.payout)
+        self.assertIsNone(old.is_otc)
+
+    def test_old_two_field_construction_still_works(self):
+        i = otcharts.Instrument("EURUSD", "EURUSD")
+        self.assertEqual((i.payout, i.is_otc, i.open), (None, None, None))
+
 
 class TestUsage(Base):
     """/v1/usage -- the figures a customer otherwise learns by being cut off."""

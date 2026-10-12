@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0
+
+- **`Instrument.open`** — whether the broker has the instrument open for trading
+  right now, from the broker's own flag (Quotex, IQ Option, BinoDex), or `None`
+  where a book does not say (Pocket Option, the real market). On weekdays Quotex
+  closes the OTC versions of the major pairs; they keep printing a price nobody
+  can trade, and a bot comparing them with the Quotex screen was comparing two
+  different instruments. Skip `open is False`.
+- **`Instrument.payout`** and **`Instrument.is_otc`** — the payout percentage and
+  the OTC flag `/v1/symbols` has always sent, which `symbols()` used to drop.
+  `payout` is `None` while an instrument is closed, on the free tier and on the
+  real market.
+- All three default to `None`, so `Instrument(symbol, name)` still works and an
+  older server reads as "not known".
+- README: the free tier is now a one-month allowance of 200 requests with no live
+  stream, and Quotex carries a watchlist on one stream as Pocket Option does.
+
 ## 0.6.1
 
 Documentation only; no code changes.

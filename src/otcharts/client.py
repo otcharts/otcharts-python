@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 import warnings
 from dataclasses import dataclass
+from typing import Optional
 
 from .errors import (
     AuthError, HouseBusy, NotFound, OTChartsError, PlanError,
@@ -36,7 +37,7 @@ from .errors import (
 __all__ = ["Client", "Candle", "Instrument", "Tick", "Usage", "Venue"]
 
 DEFAULT_BASE = "https://otcharts.com"
-USER_AGENT = "otcharts-python/0.6.1 (+https://github.com/otcharts/otcharts-python)"
+USER_AGENT = "otcharts-python/0.7.0 (+https://github.com/otcharts/otcharts-python)"
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,16 @@ class Tick:
     symbol: str = ""
 
 
+def _number(v):
+    """A JSON number, or None -- never a bool, which Python counts as an int."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _flag(v):
+    """A JSON true/false, or None for null or absent."""
+    return v if isinstance(v, bool) else None
+
+
 @dataclass(frozen=True)
 class Venue:
     """A book, and whether your plan opens it."""
@@ -81,9 +92,26 @@ class Instrument:
     `symbol` is the exact string candles() and stream() want for THIS book --
     the same pair is EURUSD_otc on Pocket Option, EURUSD-OTC on IQ and
     EUR/USD-OTC on BinoDex, and they are not interchangeable.
+
+    `open` is whether the broker has it open for trading right now, as the
+    broker itself reports it, or None where a book does not say (Pocket Option,
+    forex). On weekdays Quotex closes the OTC versions of the major pairs: they
+    keep printing a price, but nobody can trade them, so skip `open is False`.
+
+    `payout` is the percentage the book pays on a winning contract right now. It
+    is None where a book publishes none (forex is the real market), on the free
+    tier, and while the instrument is closed -- the figure a broker leaves on a
+    closed pair is not one it pays. `is_otc` says whether it is the broker's
+    synthetic OTC series rather than a real-market rate.
+
+    The last three default to None, so an older server that does not send them
+    reads as "not known" rather than as closed or unpaid.
     """
     symbol: str
     name: str
+    payout: Optional[float] = None
+    is_otc: Optional[bool] = None
+    open: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +124,8 @@ class Usage:
     `per` IS THE ONE TO READ BEFORE THE OTHERS. The free tier counts by the
     WEEK and every paid plan counts by the day, so `quota` on its own is a
     number over an unstated period -- 1,500 a week and 1,500 a day are very
-    different products. It is `"week"` or `"day"`, and defaults to `"day"`
+    different products. It is `"month"` (the free tier), `"week"` (the free
+    tier before October 2026) or `"day"`, and defaults to `"day"`
     against a server old enough not to send it.
 
     `resets` is unix seconds at the moment the window turns over, whichever
@@ -244,7 +273,10 @@ class Client:
         """
         with self._request("/v1/symbols", {"venue": venue}) as r:
             data = json.loads(r.read().decode())
-        return [Instrument(str(i["symbol"]), str(i.get("name", i["symbol"])))
+        return [Instrument(str(i["symbol"]), str(i.get("name", i["symbol"])),
+                           payout=_number(i.get("payout")),
+                           is_otc=_flag(i.get("isOtc")),
+                           open=_flag(i.get("open")))
                 for i in data.get("symbols", [])]
 
     def usage(self):
